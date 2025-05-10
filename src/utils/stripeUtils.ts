@@ -30,95 +30,55 @@ export const createCheckoutSession = async (priceId: string) => {
     }
     
     // Construa URLs absolutas de sucesso e cancelamento
-    const successUrl = ensureValidUrl(`${window.location.origin}/success`);
+    // Modificado para usar payment-confirmation em vez de success
+    const successUrl = ensureValidUrl(`${window.location.origin}/payment-confirmation`);
     const cancelUrl = ensureValidUrl(`${window.location.origin}/cancel`);
     
     console.log(`URL de sucesso: ${successUrl}`);
     console.log(`URL de cancelamento: ${cancelUrl}`);
     
-    // Chama a função Edge do Stripe para criar uma sessão de checkout
-    console.log('Chamando função Edge do Supabase...');
+    // Lista de funções para tentar, em ordem de prioridade
+    const functionList = ['stripe-checkout', 'stripe-checkout-jwt'];
     
-    const { data, error } = await supabase.functions.invoke('stripe-checkout', {
-      body: {
-        price_id: priceId,
-        success_url: successUrl,
-        cancel_url: cancelUrl
-      }
-    });
-
-    console.log('Resposta da função Edge:', { data, error });
-
-    // Verifica se houve erro na invocação da função
-    if (error) {
-      console.error('Erro na Edge Function:', error);
+    // Tenta cada função na lista até uma funcionar
+    for (let i = 0; i < functionList.length; i++) {
+      const functionName = functionList[i];
       
-      // Tenta extrair informações mais detalhadas sobre o erro
-      let errorMessage = 'Erro na conexão com o servidor';
-      if (error.message) {
-        errorMessage = error.message;
-      }
-      
-      if (error.status === 401) {
-        errorMessage = 'Erro de autenticação no servidor. Tente fazer login novamente.';
-      } else if (error.status === 403) {
-        errorMessage = 'Sem permissão para acessar o serviço de pagamento.';
-      } else if (error.status === 404) {
-        errorMessage = 'Serviço de pagamento não encontrado ou não configurado.';
-      } else if (error.status === 500) {
-        errorMessage = 'Erro interno no servidor de pagamento. Tente novamente mais tarde.';
-      } else if (error.status === 503) {
-        errorMessage = 'Serviço de pagamento temporariamente indisponível. Tente novamente mais tarde.';
-      }
-      
-      throw new Error(`Erro ao criar sessão: ${errorMessage}`);
-    }
-
-    // Verifica se a resposta contém um erro específico do Stripe
-    if (data && data.error) {
-      console.error('Erro retornado pelo Stripe:', data.error);
-      
-      // Tenta traduzir alguns erros comuns do Stripe
-      let errorMessage = data.error;
-      if (typeof data.error === 'string') {
-        if (data.error.includes('Invalid API Key')) {
-          errorMessage = 'Chave de API do Stripe inválida. Informe ao suporte.';
-        } else if (data.error.includes('rate limit')) {
-          errorMessage = 'Muitas tentativas de pagamento. Aguarde um momento e tente novamente.';
-        } else if (data.error.includes('No such price')) {
-          errorMessage = 'Plano não encontrado. Informe ao suporte.';
-        } else if (data.error.includes('Not a valid URL')) {
-          errorMessage = 'URL de redirecionamento inválida. Informe ao suporte.';
-        } else if (data.error.includes('customer_creation')) {
-          errorMessage = 'Erro de configuração do checkout. Informe ao suporte.';
+      try {
+        console.log(`Tentando função: ${functionName}`);
+        
+        const { data, error } = await supabase.functions.invoke(functionName, {
+          body: {
+            price_id: priceId,
+            success_url: successUrl,
+            cancel_url: cancelUrl
+          }
+        });
+        
+        if (error) {
+          console.error(`Erro na função ${functionName}:`, error);
+          // Não lança erro aqui, continua para a próxima função
+          continue;
         }
+        
+        if (!data) {
+          console.error(`Nenhum dado retornado pela função ${functionName}`);
+          // Não lança erro aqui, continua para a próxima função
+          continue;
+        }
+        
+        console.log(`Sessão criada com sucesso via ${functionName}:`, data);
+        return data;
+      } catch (funcError) {
+        console.error(`Erro ao chamar função ${functionName}:`, funcError);
+        // Não lança erro aqui, continua para a próxima função
       }
-      
-      throw new Error(`Erro de pagamento: ${errorMessage}`);
     }
     
-    // Verifica se a resposta contém os dados necessários
-    if (!data || !data.url) {
-      console.error('Resposta inválida do servidor:', data);
-      throw new Error('Resposta inválida do servidor de pagamento');
-    }
-    
-    console.log(`Sessão criada com sucesso. URL: ${data.url.substring(0, 60)}...`);
-    
-    // Retorna os dados necessários para o redirecionamento
-    return {
-      url: data.url,
-      sessionId: data.sessionId
-    };
+    // Se chegou aqui, todas as funções falharam
+    throw new Error('Todas as tentativas de checkout falharam. Tente novamente mais tarde.');
   } catch (error) {
     console.error('Erro ao criar sessão de checkout:', error);
-    
-    // Se o erro for uma instância de Error, usa sua mensagem
-    // Caso contrário, fornece uma mensagem genérica
-    if (error instanceof Error) {
-      throw error;
-    } else {
-      throw new Error('Erro na conexão com o servidor de pagamento. Por favor, tente novamente mais tarde.');
-    }
+    throw error;
   }
 };

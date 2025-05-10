@@ -7,6 +7,8 @@ import CheckoutSuccess from './pages/CheckoutSuccess';
 import CheckoutCancel from './pages/CheckoutCancel';
 import Success from './pages/Success';
 import AdminUsers from './pages/AdminUsers';
+import CredentialsSuccessPage from './pages/CredentialsSuccessPage';
+import PaymentConfirmation from './pages/PaymentConfirmation';
 import Footer from './components/Footer';
 
 function App() {
@@ -20,6 +22,8 @@ function App() {
             <Route path="/plans" element={<PlansPage />} />
             <Route path="/success" element={<Success />} />
             <Route path="/checkout-success" element={<CheckoutSuccess />} />
+            <Route path="/payment-success" element={<CredentialsSuccessPage />} />
+            <Route path="/payment-confirmation" element={<PaymentConfirmation />} />
             <Route path="/cancel" element={<CheckoutCancel />} />
             <Route path="/admin/users" element={<AdminUsers />} />
           </Routes>

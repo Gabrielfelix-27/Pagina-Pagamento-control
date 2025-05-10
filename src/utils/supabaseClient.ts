@@ -1,21 +1,36 @@
 import { createClient } from '@supabase/supabase-js';
-import type { Database } from '../types/supabase';
 
-// Configuração do projeto ativo
-const supabaseUrl = 'https://gyogfvfmsotveacjcckr.supabase.co';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd5b2dmdmZtc290dmVhY2pjY2tyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTQ0MTE1NzEsImV4cCI6MjAyOTk4NzU3MX0.aTsDXdgXqvQAoLzK8Nb6tJHhVmxcD7Isgr5sUuZWULk';
+// Obtém as variáveis de ambiente do Supabase 
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
-// Fallback para variáveis de ambiente, se configuradas
-const envUrl = import.meta.env.VITE_SUPABASE_URL;
-const envAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Verifica se as variáveis de ambiente estão definidas
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.error('Variáveis de ambiente do Supabase não definidas! Verifique o arquivo .env');
+}
 
-export const supabase = createClient<Database>(
-  envUrl || supabaseUrl, 
-  envAnonKey || supabaseAnonKey,
-  {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-    },
+// Inicializa o cliente do Supabase
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    autoRefreshToken: true,
+    persistSession: true,
   }
-);
+});
+
+// Função de utilidade para verificar se o usuário está autenticado
+export const isAuthenticated = async () => {
+  const { data: { session } } = await supabase.auth.getSession();
+  return session !== null;
+};
+
+// Função para verificar as credenciais de um pagamento
+export const getPaymentCredentials = async (paymentId: string) => {
+  try {
+    return await supabase.functions.invoke('get-payment-credentials', {
+      body: { payment_id: paymentId }
+    });
+  } catch (error) {
+    console.error('Erro ao recuperar credenciais:', error);
+    throw error;
+  }
+};

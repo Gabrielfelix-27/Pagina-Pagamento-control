@@ -1,0 +1,631 @@
+# INSTRUÇÕES PARA UPLOAD NO DASHBOARD DO SUPABASE
+
+1. Acesse o Dashboard do Supabase em: https://supabase.com/dashboard
+2. Selecione seu projeto (gyogfvfmsotveacjcckr)
+3. No menu lateral, clique em "Edge Functions"
+4. Localize a função "stripe-webhook" e clique nela
+5. Clique em "Edit Code" ou "Edit Function" (o botão pode variar)
+6. Substitua TODO o código pelo seguinte:
+
+```typescript
+// Serviço de Email inline para evitar problema de importação
+function generateRandomPassword(length = 10) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()";
+  let password = "";
+  for (let i = 0; i < length; i++) {
+    password += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return password;
+}
+
+// Serviço de Email simplificado
+const EmailService = {
+  // Email de boas-vindas com credenciais
+  async sendWelcomeEmail(toEmail, password, name) {
+    try {
+      const sendGridApiKey = Deno.env.get("SENDGRID_API_KEY") || "";
+      const emailFrom = Deno.env.get("EMAIL_FROM") || "DRC Finanças <noreply@drcfinancas.com.br>";
+      const appUrl = Deno.env.get("APP_URL") || "https://app.drcfinancas.com.br";
+      
+      console.log(`[EMAIL_SERVICE] Inicializando serviço de email de boas-vindas`);
+      
+      if (!sendGridApiKey) {
+        console.error("[CRITICAL] SendGrid API Key não está configurada!");
+        return false;
+      }
+      
+      const content = `
+        <h1>Bem-vindo ao DRC Finanças!</h1>
+        <p>Olá ${name},</p>
+        <p>Seu acesso foi criado com sucesso e suas credenciais foram exibidas na tela de confirmação do pagamento.</p>
+        <p>Este email serve como um <strong>backup</strong> de suas informações de acesso:</p>
+        
+        <div style="background-color: #f8f9fa; padding: 15px; margin: 15px 0; border-radius: 5px;">
+          <p><strong>Email:</strong> ${toEmail}</p>
+          <p><strong>Senha:</strong> ${password}</p>
+        </div>
+        
+        <p><strong>Importante:</strong> Por motivos de segurança, recomendamos que você altere sua senha após o primeiro acesso.</p>
+        
+        <p>Para acessar o DRC Finanças, clique no botão abaixo:</p>
+        
+        <p><a href="${appUrl}/login" style="display: inline-block; background-color: #4CAF50; color: white; padding: 12px 20px; text-decoration: none; border-radius: 5px; margin-top: 20px;">Ir para o DRC Finanças</a></p>
+        
+        <p>Atenciosamente,<br>Equipe DRC Finanças</p>
+      `;
+      
+      const data = {
+        personalizations: [{ to: [{ email: toEmail }] }],
+        from: { email: emailFrom.includes("<") ? emailFrom.match(/<(.+)>/)?.[1] || emailFrom : emailFrom },
+        subject: "DRC Finanças - Backup das suas Credenciais de Acesso",
+        content: [{ type: "text/html", value: content }]
+      };
+      
+      console.log("[EMAIL_SERVICE] Enviando email de boas-vindas para:", toEmail);
+      
+      const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sendGridApiKey}`
+        },
+        body: JSON.stringify(data)
+      });
+      
+      if (response.ok) {
+        console.log(`[EMAIL_SERVICE] Email enviado com sucesso para ${toEmail}`);
+        return true;
+      } else {
+        const errorText = await response.text();
+        console.error(`[EMAIL_SERVICE] ERRO: SendGrid respondeu com status ${response.status}`, errorText);
+        return false;
+      }
+    } catch (error) {
+      console.error(`[EMAIL_SERVICE] ERRO ao enviar email: ${error.message}`);
+      return false;
+    }
+  },
+
+  // Email de confirmação de assinatura
+  async sendSubscriptionConfirmationEmail(toEmail, planDetails, name) {
+    try {
+      const sendGridApiKey = Deno.env.get("SENDGRID_API_KEY") || "";
+      const emailFrom = Deno.env.get("EMAIL_FROM") || "DRC Finanças <noreply@drcfinancas.com.br>";
+      const appUrl = Deno.env.get("APP_URL") || "https://app.drcfinancas.com.br";
+      
+      console.log(`[EMAIL_SERVICE] Enviando email de confirmação de assinatura`);
+      
+      if (!sendGridApiKey) {
+        console.error("[CRITICAL] SendGrid API Key não está configurada!");
+        return false;
+      }
+      
+      // Formatação do valor do plano
+      const planValue = planDetails.amount 
+        ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(planDetails.amount / 100)
+        : 'Valor não disponível';
+      
+      const content = `
+        <h1>Assinatura Confirmada!</h1>
+        <p>Olá ${name},</p>
+        <p>Sua assinatura do DRC Finanças foi confirmada com sucesso!</p>
+        
+        <div style="background-color: #f8f9fa; padding: 15px; margin: 15px 0; border-radius: 5px;">
+          <p><strong>Plano:</strong> ${planDetails.name || 'Plano DRC Finanças'}</p>
+          <p><strong>Valor:</strong> ${planValue}</p>
+          <p><strong>Status:</strong> ${planDetails.status || 'Ativo'}</p>
+        </div>
+        
+        <p>Agora você tem acesso completo a todas as funcionalidades do DRC Finanças.</p>
+        
+        <p><a href="${appUrl}/dashboard" style="display: inline-block; background-color: #4CAF50; color: white; padding: 12px 20px; text-decoration: none; border-radius: 5px; margin-top: 20px;">Acessar Minha Conta</a></p>
+        
+        <p>Atenciosamente,<br>Equipe DRC Finanças</p>
+      `;
+      
+      const data = {
+        personalizations: [{ to: [{ email: toEmail }] }],
+        from: { email: emailFrom.includes("<") ? emailFrom.match(/<(.+)>/)?.[1] || emailFrom : emailFrom },
+        subject: "Assinatura Confirmada - DRC Finanças",
+        content: [{ type: "text/html", value: content }]
+      };
+      
+      console.log("[EMAIL_SERVICE] Enviando email de confirmação para:", toEmail);
+      
+      const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sendGridApiKey}`
+        },
+        body: JSON.stringify(data)
+      });
+      
+      if (response.ok) {
+        console.log(`[EMAIL_SERVICE] Email de confirmação enviado com sucesso para ${toEmail}`);
+        return true;
+      } else {
+        const errorText = await response.text();
+        console.error(`[EMAIL_SERVICE] ERRO: SendGrid respondeu com status ${response.status}`, errorText);
+        return false;
+      }
+    } catch (error) {
+      console.error(`[EMAIL_SERVICE] ERRO ao enviar email de confirmação: ${error.message}`);
+      return false;
+    }
+  }
+};
+
+// Webhook principal
+import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import Stripe from "https://esm.sh/stripe@12.9.0?target=deno";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
+
+// Cabeçalhos CORS simplificados
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS"
+};
+
+// Inicialização do Supabase
+const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+// Inicialização do Stripe
+const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY") || "";
+const stripe = new Stripe(stripeSecretKey, {
+  apiVersion: "2023-10-16",
+  httpClient: Stripe.createFetchHttpClient(),
+});
+
+// URL da aplicação para links em emails
+const appUrl = Deno.env.get("APP_URL") || "https://app.drcfinancas.com.br";
+
+// Chave de webhook para verificar assinatura
+const endpointSecret = Deno.env.get("STRIPE_WEBHOOK_SECRET") || "";
+
+// SendGrid API Key para verificação
+const sendGridApiKey = Deno.env.get("SENDGRID_API_KEY") || "";
+
+console.log("[✓] Função stripe-webhook inicializada");
+console.log(`[INFO] Supabase URL está configurada: ${!!supabaseUrl}`);
+console.log(`[INFO] Supabase Service Key está configurada: ${!!supabaseServiceKey}`);
+console.log(`[INFO] Stripe Secret Key está configurada: ${!!stripeSecretKey}`);
+console.log(`[INFO] Webhook Secret está configurada: ${!!endpointSecret}`);
+console.log(`[INFO] SendGrid API Key está configurada: ${!!sendGridApiKey}`);
+
+// Verificando variáveis críticas
+if (!sendGridApiKey) {
+  console.error("[CRITICAL] SendGrid API Key não está configurada! Emails não serão enviados.");
+}
+
+serve(async (req) => {
+  console.log(`[REQUEST] ${req.method} ${req.url}`);
+
+  // Responde a requisições preflight OPTIONS
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders
+    });
+  }
+
+  try {
+    if (req.method !== "POST") {
+      return new Response(
+        JSON.stringify({ error: "Método não permitido" }),
+        {
+          status: 405,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Obtém a assinatura do cabeçalho
+    const signature = req.headers.get("stripe-signature");
+    if (!signature) {
+      console.error("[ERROR] Assinatura do webhook não encontrada");
+      return new Response(
+        JSON.stringify({ error: "Assinatura do webhook não encontrada" }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Obtém o corpo da requisição
+    const reqBody = await req.text();
+
+    // Verifica a assinatura e constrói o evento
+    let event;
+    try {
+      if (endpointSecret) {
+        event = stripe.webhooks.constructEvent(reqBody, signature, endpointSecret);
+      } else {
+        // Se não há segredo configurado, apenas parse o JSON (não seguro para produção)
+        console.warn("[WARN] Webhook sem verificação de assinatura - não seguro para produção");
+        event = JSON.parse(reqBody);
+      }
+    } catch (err) {
+      console.error(`[ERROR] Webhook error: ${err.message}`);
+      return new Response(
+        JSON.stringify({ error: `Webhook Error: ${err.message}` }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    console.log(`[INFO] Evento recebido: ${event.type}`);
+
+    // Processar diferentes tipos de eventos
+    switch (event.type) {
+      case 'checkout.session.completed':
+        console.log(`[EVENT] Processando checkout.session.completed: ${JSON.stringify(event.data.object.id)}`);
+        await handleCheckoutSessionCompleted(event.data.object);
+        break;
+      case 'payment_intent.succeeded':
+        console.log(`[EVENT] Processando payment_intent.succeeded: ${JSON.stringify(event.data.object.id)}`);
+        await handlePaymentIntentSucceeded(event.data.object);
+        break;
+      case 'customer.subscription.created':
+        console.log(`[EVENT] Processando customer.subscription.created: ${JSON.stringify(event.data.object.id)}`);
+        await handleSubscriptionCreated(event.data.object);
+        break;
+      default:
+        console.log(`[INFO] Evento não tratado: ${event.type}`);
+    }
+
+    return new Response(
+      JSON.stringify({ received: true }),
+      {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  } catch (error) {
+    console.error(`[ERROR] Erro geral: ${error.message}`);
+    console.error(`[ERROR] Stack trace: ${error.stack || 'Não disponível'}`);
+    
+    return new Response(
+      JSON.stringify({ 
+        error: "Erro interno do servidor",
+        message: error.message || "Erro desconhecido"
+      }),
+      { 
+        status: 500, 
+        headers: { ...corsHeaders, "Content-Type": "application/json" } 
+      }
+    );
+  }
+});
+
+/**
+ * Processa uma sessão de checkout completa
+ */
+async function handleCheckoutSessionCompleted(session) {
+  console.log('[INFO] Processando checkout.session.completed');
+  console.log(`[INFO] ID da sessão: ${session.id}`);
+  console.log(`[INFO] Status: ${session.status}`);
+  console.log(`[INFO] Customer: ${session.customer}`);
+
+  // Só continua se o status for pago
+  if (session.payment_status !== 'paid') {
+    console.log(`[INFO] Sessão não paga, status: ${session.payment_status}`);
+    return;
+  }
+
+  try {
+    // Obter dados do cliente no Stripe
+    const customer = await stripe.customers.retrieve(session.customer);
+    console.log(`[INFO] Cliente recuperado: ${customer.email}`);
+
+    // Verificar se o usuário já existe no Supabase
+    const { data: existingUsers, error: searchError } = await supabase.auth.admin.listUsers();
+
+    if (searchError) {
+      console.error(`[ERROR] Erro ao listar usuários: ${searchError.message}`);
+      throw searchError;
+    }
+
+    // Verifica se o email já existe na lista de usuários
+    const userExists = existingUsers.users.some(user => user.email === customer.email);
+
+    // Se o usuário já existe, apenas atualize a assinatura
+    if (userExists) {
+      console.log(`[INFO] Usuário já existe no Supabase: ${customer.email}`);
+      
+      // Procurar o ID do usuário pelo email
+      const existingUser = existingUsers.users.find(user => user.email === customer.email);
+      if (existingUser) {
+        await updateUserSubscription(existingUser.id, session);
+      }
+      
+      // Atualizar a URL de sucesso para incluir informação que o usuário já existe
+      if (session.success_url) {
+        try {
+          // Obter o domínio base da URL de sucesso original
+          const originalUrl = new URL(session.success_url);
+          const baseUrl = `${originalUrl.protocol}//${originalUrl.host}`;
+          
+          // Modificar a sessão atual para redirecionar para a página de confirmação de pagamento
+          // IMPORTANTE: Mudando formato dos parâmetros para simplificar - removendo o parâmetro credentials=true
+          const updatedUrl = `${baseUrl}/payment-confirmation?email=${encodeURIComponent(customer.email)}`;
+          
+          console.log(`[INFO] Atualizando URL de sucesso para: ${updatedUrl}`);
+          
+          await stripe.checkout.sessions.update(session.id, {
+            success_url: updatedUrl
+          });
+          console.log(`[INFO] URL de sucesso atualizada para usuário existente`);
+        } catch (urlError) {
+          console.error(`[ERROR] Erro ao atualizar URL de sucesso: ${urlError.message}`);
+        }
+      }
+      
+      return;
+    }
+
+    // Gerar senha temporária segura
+    const tempPassword = generateRandomPassword();
+    console.log(`[INFO] Senha temporária gerada para ${customer.email}: ${tempPassword}`);
+
+    // Criar um novo usuário com autenticação no Auth
+    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+      email: customer.email,
+      email_confirm: true,
+      user_metadata: {
+        full_name: customer.name || '',
+        stripe_customer_id: customer.id,
+        subscription_status: session.payment_status
+      },
+      password: tempPassword
+    });
+
+    if (authError) {
+      console.error(`[ERROR] Erro ao criar usuário no Auth: ${authError.message}`);
+      throw authError;
+    }
+
+    console.log(`[SUCCESS] Usuário criado com sucesso: ${authData.user.id}`);
+
+    // Atualizar perfil do usuário com dados adicionais
+    await updateUserProfile(authData.user.id, customer, session);
+    
+    // Loggar as credenciais para debug (remover em produção)
+    console.log(`[DEBUG] Credenciais: Email=${customer.email}, Senha=${tempPassword}`);
+    
+    // Atualizar a URL de sucesso para incluir as credenciais do usuário
+    if (session.success_url) {
+      try {
+        // Obter o domínio base da URL de sucesso original
+        const originalUrl = new URL(session.success_url);
+        const baseUrl = `${originalUrl.protocol}//${originalUrl.host}`;
+        
+        // Modificar a sessão atual para incluir as credenciais na URL de sucesso
+        // IMPORTANTE: Simplificando os parâmetros - removendo o parâmetro credentials=true
+        const updatedUrl = `${baseUrl}/payment-confirmation?email=${encodeURIComponent(customer.email)}&password=${encodeURIComponent(tempPassword)}`;
+        
+        console.log(`[INFO] Atualizando URL de sucesso para: ${updatedUrl}`);
+        
+        await stripe.checkout.sessions.update(session.id, {
+          success_url: updatedUrl
+        });
+        console.log(`[INFO] URL de sucesso atualizada com credenciais`);
+      } catch (urlError) {
+        console.error(`[ERROR] Erro ao atualizar URL de sucesso: ${urlError.message}`);
+      }
+    }
+    
+    // Verificar se a SendGrid API Key está configurada e enviar email de backup
+    if (!sendGridApiKey) {
+      console.error("[ERROR] SendGrid API Key não configurada! Email não enviado para " + customer.email);
+    } else {
+      // Enviar email de boas-vindas com credenciais como backup
+      try {
+        console.log(`[INFO] Tentando enviar email de backup para ${customer.email} via SendGrid`);
+        const emailResult = await EmailService.sendWelcomeEmail(customer.email, tempPassword, customer.name || 'Cliente');
+        
+        if (emailResult) {
+          console.log(`[SUCCESS] Email de backup enviado com sucesso para ${customer.email}`);
+        } else {
+          console.error(`[ERROR] Falha ao enviar email de backup, retornou false para ${customer.email}`);
+        }
+      } catch (emailError) {
+        console.error(`[ERROR] Erro ao enviar email de backup: ${emailError.message}`);
+        console.error(`[ERROR] Stack trace do erro de email: ${emailError.stack || 'Não disponível'}`);
+      }
+    }
+
+    console.log(`[SUCCESS] Processamento completo para ${customer.email}`);
+  } catch (error) {
+    console.error(`[ERROR] Erro ao processar checkout completo: ${error.message}`);
+    console.error(`[ERROR] Stack trace: ${error.stack || 'Não disponível'}`);
+    // Em produção, considere adicionar à fila para retry ou notificar administrador
+  }
+}
+
+// Funções auxiliares
+/**
+ * Atualiza o perfil do usuário com dados adicionais
+ */
+async function updateUserProfile(userId, customer, data) {
+  try {
+    // Obter informações adicionais que queremos salvar
+    const currentDate = new Date().toISOString();
+
+    // Determinar se estamos lidando com uma sessão de checkout ou um pagamento direto
+    const isCheckoutSession = data && data.payment_status;
+    const isPaymentIntent = data && data.status;
+    
+    // Informações a serem salvas
+    const profileData = {
+      id: userId,
+      updated_at: currentDate,
+      stripe_customer_id: customer.id,
+      is_subscribed: true
+    };
+    
+    // Adicionar dados específicos baseados no tipo de evento
+    if (isCheckoutSession) {
+      // Adicionar dados específicos de sessão de checkout
+      Object.assign(profileData, {
+        subscription_status: 'active',
+        subscription_id: data.subscription || null,
+        plan_id: extractPlanIdFromSession(data),
+        payment_status: data.payment_status,
+        subscription_period_end: calculateSubscriptionEndDate(data)
+      });
+    } else if (isPaymentIntent) {
+      // Adicionar dados específicos de payment intent
+      Object.assign(profileData, {
+        payment_status: data.status || 'paid',
+        last_payment_id: data.id,
+        last_payment_status: data.status,
+        last_payment_amount: data.amount ? data.amount / 100 : null,
+        last_payment_date: currentDate,
+        payment_source: 'payment_intent'
+      });
+    }
+    
+    console.log(`[INFO] Atualizando perfil para usuário ${userId} com dados:`, JSON.stringify(profileData));
+    
+    // Atualizar o perfil do usuário na tabela 'profiles'
+    const { error } = await supabase
+      .from('profiles')
+      .upsert(profileData);
+
+    if (error) {
+      console.error(`[ERROR] Erro ao atualizar perfil: ${error.message}`);
+      throw error;
+    }
+    
+    console.log(`[SUCCESS] Perfil atualizado para usuário ${userId}`);
+  } catch (error) {
+    console.error(`[ERROR] Erro em updateUserProfile: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Atualiza as informações de assinatura do usuário
+ */
+async function updateUserSubscription(userId, subscription) {
+  try {
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        updated_at: new Date().toISOString(),
+        subscription_status: subscription.status || 'active',
+        subscription_id: subscription.id || subscription.subscription,
+        plan_id: extractPlanId(subscription),
+        is_subscribed: true,
+        subscription_period_end: calculateEndDate(subscription)
+      })
+      .eq('id', userId);
+
+    if (error) {
+      console.error(`[ERROR] Erro ao atualizar assinatura: ${error.message}`);
+      throw error;
+    }
+    
+    console.log(`[SUCCESS] Assinatura atualizada para usuário ${userId}`);
+  } catch (error) {
+    console.error(`[ERROR] Erro em updateUserSubscription: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Extrai o ID do plano da sessão
+ */
+function extractPlanIdFromSession(session) {
+  try {
+    // Tentar obter o ID do plano das line_items
+    if (session.line_items && session.line_items.data && session.line_items.data.length > 0) {
+      return session.line_items.data[0].price.id;
+    }
+    
+    // Se não tiver line_items, tentar obter da subscription
+    if (session.subscription) {
+      return `sub_${session.subscription}`;
+    }
+    
+    return 'unknown_plan';
+  } catch (error) {
+    console.error(`[ERROR] Erro ao extrair ID do plano: ${error.message}`);
+    return 'unknown_plan';
+  }
+}
+
+/**
+ * Extrai o ID do plano da assinatura
+ */
+function extractPlanId(subscription) {
+  try {
+    if (subscription.items && subscription.items.data && subscription.items.data.length > 0) {
+      return subscription.items.data[0].price.id;
+    }
+    
+    return 'unknown_plan';
+  } catch (error) {
+    console.error(`[ERROR] Erro ao extrair ID do plano: ${error.message}`);
+    return 'unknown_plan';
+  }
+}
+
+/**
+ * Calcula a data de término da assinatura
+ */
+function calculateSubscriptionEndDate(session) {
+  try {
+    // Se for uma assinatura, calcular baseado na duração do plano
+    if (session.subscription) {
+      // Na produção, consultar os detalhes da assinatura para obter a data real
+      const oneMonthFromNow = new Date();
+      oneMonthFromNow.setMonth(oneMonthFromNow.getMonth() + 1);
+      return oneMonthFromNow.toISOString();
+    }
+    
+    // Para pagamentos únicos, não há data de expiração
+    return null;
+  } catch (error) {
+    console.error(`[ERROR] Erro ao calcular data de término: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Calcula a data de término com base nos dados da assinatura
+ */
+function calculateEndDate(subscription) {
+  try {
+    // Se tiver current_period_end, usar como data de término
+    if (subscription.current_period_end) {
+      return new Date(subscription.current_period_end * 1000).toISOString();
+    }
+    
+    // Caso contrário, estimar baseado no plano (simplificado)
+    const oneMonthFromNow = new Date();
+    oneMonthFromNow.setMonth(oneMonthFromNow.getMonth() + 1);
+    return oneMonthFromNow.toISOString();
+  } catch (error) {
+    console.error(`[ERROR] Erro ao calcular data de término: ${error.message}`);
+    return null;
+  }
+}
+```
+
+7. Clique no botão "Deploy" ou "Save" para salvar as alterações e implantar a função
+
+8. Após a implantação, teste fazendo um pagamento para verificar se o redirecionamento funciona corretamente.
+
+NOTAS IMPORTANTES:
+- Este código combina o serviço de email e a função webhook em um único arquivo
+- As funções desnecessárias como handlePaymentIntentSucceeded e processCustomerFromPayment foram removidas para simplificar
+- **MUDANÇA IMPORTANTE**: A forma como os parâmetros são passados na URL foi simplificada para resolver o problema com as credenciais
+</rewritten_file> 
