@@ -133,14 +133,14 @@ serve(async (req) => {
     if (!userExists) {
       console.log("[INFO] Usuário não encontrado. Criando manualmente...");
       
-      // Gerar uma senha temporária
-      const tempPassword = generateRandomPassword();
+      // Definir senha padrão
+      const tempPassword = "123456"; // Senha fixa padrão
       
       // Criar o usuário no Supabase Auth
       const { data: authData, error: authError } = await supabase.auth.admin.createUser({
         email: customerEmail,
         email_confirm: true,
-        password: tempPassword,
+        password: "123456",
         user_metadata: {
           full_name: session.customer_details?.name || '',
           stripe_customer_id: typeof session.customer === 'string' ? session.customer : session.customer?.id,
@@ -175,7 +175,7 @@ serve(async (req) => {
           success: true,
           message: "Usuário criado com sucesso",
           email: customerEmail,
-          password: tempPassword // Em produção, não envie a senha na resposta - apenas um aviso que foi enviada por email
+          password: "123456" // Senha fixa padrão
         }),
         {
           status: 200,
@@ -255,15 +255,8 @@ async function updateUserProfile(userId: string, session: any) {
  * Gera uma senha aleatória segura
  */
 function generateRandomPassword() {
-  const length = 16;
-  const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+~`|}{[]\\:;?><,./-=";
-  let password = "";
-  
-  for (let i = 0, n = charset.length; i < length; ++i) {
-    password += charset.charAt(Math.floor(Math.random() * n));
-  }
-  
-  return password;
+  // Sempre retorna a senha padrão "123456"
+  return "123456";
 }
 
 /**

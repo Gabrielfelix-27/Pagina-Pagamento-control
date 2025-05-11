@@ -17,31 +17,91 @@ const PaymentConfirmation: React.FC = () => {
     try {
       console.log('Tentando recuperar credenciais para a sessão:', sessionId);
       
+      // Adicionar timestamp para evitar cache
+      const timestamp = new Date().getTime();
+      
+      // Primeira tentativa: API Function
       const { data, error } = await supabase.functions.invoke('get-payment-credentials', {
-        body: { payment_id: sessionId }
+        body: { payment_id: sessionId, _ts: timestamp }
       });
       
       if (error) {
         console.error('Erro ao recuperar credenciais:', error);
-        setRecoveryError(`Falha ao recuperar credenciais: ${error.message}`);
-        return false;
+        
+        // Segunda tentativa: Direct RPC Call
+        console.log('Tentando segunda abordagem: RPC direta');
+        const { data: rpcData, error: rpcError } = await supabase.rpc('get_payment_credentials', { 
+          p_payment_id: sessionId 
+        });
+        
+        if (rpcError) {
+          console.error('Erro na chamada RPC:', rpcError);
+          setRecoveryError(`Falha ao recuperar credenciais: ${error.message}`);
+          return false;
+        }
+        
+        if (rpcData && rpcData.length > 0) {
+          console.log('Credenciais recuperadas via RPC!', rpcData[0]);
+          
+          if (rpcData[0].email) {
+            setUserEmail(rpcData[0].email);
+          }
+          
+          // Sempre usar a senha padrão
+          setUserPassword("123456");
+          
+          setDebug(prev => `${prev}\n\nCredenciais recuperadas via RPC:\n${JSON.stringify(rpcData[0], null, 2)}`);
+          return true;
+        } else {
+          console.log('RPC não retornou dados:', rpcData);
+          setRecoveryError(`Falha ao recuperar credenciais: ${error.message}`);
+          return false;
+        }
       }
       
       if (data && data.success && data.data) {
-        console.log('Credenciais recuperadas com sucesso!', data.source);
+        console.log('Credenciais recuperadas com sucesso!', data.source, data);
         
         if (data.data.email) {
           setUserEmail(data.data.email);
         }
         
-        if (data.data.password) {
-          setUserPassword(data.data.password);
-        }
+        // Sempre usar a senha padrão
+        setUserPassword("123456");
         
         setDebug(prev => `${prev}\n\nCredenciais recuperadas via API (${data.source}):\n${JSON.stringify(data.data, null, 2)}`);
         return true;
       } else {
         console.warn('API retornou sem erro, mas sem dados válidos:', data);
+        
+        // Tentar recuperar diretamente da tabela payment_credentials como alternativa
+        try {
+          console.log('Tentando recuperar diretamente da tabela payment_credentials');
+          const { data: tableData, error: tableError } = await supabase
+            .from('payment_credentials')
+            .select('*')
+            .eq('payment_id', sessionId)
+            .maybeSingle();
+            
+          if (tableError) {
+            console.error('Erro ao consultar tabela:', tableError);
+          } else if (tableData) {
+            console.log('Credenciais recuperadas da tabela!', tableData);
+            
+            if (tableData.email) {
+              setUserEmail(tableData.email);
+            }
+            
+            // Sempre usar a senha padrão
+            setUserPassword("123456");
+            
+            setDebug(prev => `${prev}\n\nCredenciais recuperadas diretamente da tabela:\n${JSON.stringify(tableData, null, 2)}`);
+            return true;
+          }
+        } catch (tableErr) {
+          console.error('Exceção ao consultar tabela:', tableErr);
+        }
+        
         setRecoveryError('Não foi possível recuperar as credenciais (dados inválidos)');
         return false;
       }
@@ -70,6 +130,11 @@ const PaymentConfirmation: React.FC = () => {
       const sessionIdParam = params.get('session_id'); // ID de sessão do Stripe
       const paymentIdParam = params.get('payment_intent') || params.get('payment_intent_id'); // ID do PaymentIntent
       
+      console.log('Email param:', emailParam);
+      console.log('Password param:', passwordParam);
+      console.log('Session ID:', sessionIdParam);
+      console.log('Payment ID:', paymentIdParam);
+      
       // Flag para indicar se precisamos tentar recuperação
       let needsRecovery = false;
       
@@ -81,16 +146,12 @@ const PaymentConfirmation: React.FC = () => {
         needsRecovery = true;
       }
       
-      if (passwordParam) {
-        console.log('Senha encontrada:', passwordParam);
-        setUserPassword(passwordParam);
-      } else {
-        console.log('Senha não encontrada nos parâmetros');
-        // Note: não definimos needsRecovery=true aqui porque o usuário pode já existir
-      }
+      // Definir sempre a senha padrão, independente do parâmetro
+      console.log('Definindo senha padrão: 123456');
+      setUserPassword("123456");
       
       // Se faltam dados e temos um ID de sessão/pagamento, tentamos recuperar
-      if ((needsRecovery || !passwordParam) && (sessionIdParam || paymentIdParam) && !recoveryAttempted) {
+      if (needsRecovery && (sessionIdParam || paymentIdParam) && !recoveryAttempted) {
         setRecoveryAttempted(true);
         console.log('Tentando recuperar credenciais...');
         
@@ -143,7 +204,7 @@ const PaymentConfirmation: React.FC = () => {
 CREDENCIAIS DE ACESSO - NÃO COMPARTILHE
 ---------------------------------------
 Email: ${userEmail}
-Senha: ${userPassword}
+Senha: 123456
 ---------------------------------------
 IMPORTANTE: Guarde estas informações em local seguro.
 Você precisará desta senha para acessar o sistema.
@@ -193,25 +254,22 @@ Você precisará desta senha para acessar o sistema.
           Seu pagamento foi processado com sucesso! {hasFullCredentials && 'Confira abaixo suas credenciais de acesso.'}
         </p>
 
+        <div className="bg-lime-900/30 border border-lime-500/30 rounded-lg p-4 mb-6 no-print">
+          <div className="flex items-center space-x-3 mb-2">
+            <CheckCircle className="h-6 w-6 text-lime-500 flex-shrink-0" />
+            <p className="text-lime-300 font-bold">
+              Política de Senha Padrão
+            </p>
+          </div>
+          <p className="text-lime-200 text-sm">
+            Para sua conveniência, todos os novos usuários recebem a senha padrão <strong>123456</strong>. 
+            Essa senha será válida para todos os acessos até que você a altere. 
+            Recomendamos fortemente que você altere essa senha no primeiro acesso.
+          </p>
+        </div>
+
         <div className="space-y-6">
           {/* Alert Banner - Extremely Important */}
-          {hasFullCredentials && (
-            <div className={`${savedCredentials ? 'bg-green-900/30 border-green-500/30' : 'bg-red-900/30 border-red-500/30'} border rounded-lg p-4 mb-6 animate-pulse no-print`}>
-                <div className="flex items-center space-x-3 mb-3">
-                  <AlertCircle className={`h-6 w-6 ${savedCredentials ? 'text-green-500' : 'text-red-500'} flex-shrink-0`} />
-                  <p className={`${savedCredentials ? 'text-green-300' : 'text-red-300'} font-bold`}>
-                    {savedCredentials ? 'CREDENCIAIS SALVAS!' : 'ATENÇÃO: DADOS DE ACESSO!'}
-                  </p>
-                </div>
-                <p className={`${savedCredentials ? 'text-green-200' : 'text-red-200'} text-sm font-medium`}>
-                  {savedCredentials 
-                    ? 'Você já salvou suas credenciais. Guarde-as em local seguro.' 
-                    : 'Estas são suas ÚNICAS credenciais de acesso ao sistema. Você DEVE salvar esta senha agora, pois precisará dela para fazer login!'}
-                </p>
-            </div>
-          )}
-
-          {/* Erro de recuperação */}
           {recoveryError && (
             <div className="bg-yellow-900/30 border border-yellow-500/30 rounded-lg p-4 mb-6 no-print">
               <div className="flex items-center space-x-3 mb-3">
@@ -221,7 +279,7 @@ Você precisará desta senha para acessar o sistema.
                 </p>
               </div>
               <p className="text-yellow-200 text-sm">
-                Houve um problema ao recuperar suas credenciais completas. Entre em contato com o suporte caso precise de ajuda.
+                Houve um problema ao recuperar suas credenciais completas. Entre em contato com o suporte com seu email e o código de referência: {debug ? JSON.parse(debug).payment_intent || JSON.parse(debug).session_id : 'não disponível'}
               </p>
             </div>
           )}
@@ -236,92 +294,73 @@ Você precisará desta senha para acessar o sistema.
                 </p>
               </div>
               <p className="text-blue-200 text-sm">
-                Você já possui uma conta associada ao email abaixo. Por favor, use sua senha atual para fazer login.
+                Você já possui uma conta associada ao email abaixo. Se esta é sua primeira compra, 
+                tente usar a senha padrão <strong>123456</strong> para fazer login. 
+                Caso já tenha alterado sua senha, use a senha atual para acessar o sistema.
               </p>
             </div>
           )}
 
-          <div className="printable-credentials">
-            <h2>Suas Credenciais de Acesso</h2>
+          {/* Credenciais */}
+          <div className="bg-gray-700 rounded-lg p-4 mb-6">
+            <h2 className="text-xl font-medium text-white mb-4">Suas Credenciais de Acesso</h2>
             
-            <div className="credential-item">
-              <span className="credential-label">Email:</span>
-              <div className="credential-value">{userEmail || 'Não disponível'}</div>
-            </div>
-            
-            {hasFullCredentials && (
-              <div className="credential-item">
-                <span className="credential-label">Senha:</span>
-                <div className="credential-value">{userPassword}</div>
+            <div className="mb-4">
+              <span className="block text-sm font-medium text-gray-300 mb-2">Email:</span>
+              <div className="text-white font-mono bg-gray-900/50 p-3 rounded flex justify-between items-center">
+                <span>{userEmail || 'Não disponível'}</span>
+                {userEmail && (
+                  <button 
+                    onClick={() => copyToClipboard(userEmail, 'email')}
+                    className="p-2 text-gray-400 hover:text-white rounded-md hover:bg-gray-600 ml-2"
+                    title="Copiar email"
+                  >
+                    {copyStatus['email'] ? <Check className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
+                  </button>
+                )}
               </div>
-            )}
-            
-            <p className="important-note">
-              IMPORTANTE: Guarde estas informações em local seguro.
-              {hasFullCredentials ? 'Você precisará desta senha para acessar o sistema.' : 'Use sua senha atual para fazer login.'}
-            </p>
-          </div>
-
-          {/* Screen-only credentials display */}
-          <div className="bg-gray-700 rounded-lg p-4 relative">
-            <span className="block text-sm font-medium text-gray-300 mb-2">Email:</span>
-            <div className="text-white font-mono bg-gray-900/50 p-3 rounded">
-              {userEmail || 'Não disponível'}
             </div>
-            {userEmail && (
-              <button 
-                onClick={() => copyToClipboard(userEmail, 'email')}
-                className="absolute top-4 right-4 p-2 text-gray-400 hover:text-white rounded-md hover:bg-gray-600"
-                title="Copiar email"
-              >
-                {copyStatus['email'] ? <Check className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
-              </button>
+            
+            <div className="mb-4">
+              <span className="block text-sm font-medium text-gray-300 mb-2">Senha:</span>
+              <div className="text-white font-mono bg-gray-900/50 p-3 rounded flex justify-between items-center">
+                <span>{userPassword || 'Se for seu primeiro acesso, a senha é 123456, ou use sua senha atual'}</span>
+                {userPassword && (
+                  <button 
+                    onClick={() => copyToClipboard(userPassword, 'password')}
+                    className="p-2 text-gray-400 hover:text-white rounded-md hover:bg-gray-600 ml-2"
+                    title="Copiar senha"
+                  >
+                    {copyStatus['password'] ? <Check className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
+                  </button>
+                )}
+              </div>
+              <p className="mt-2 text-yellow-300 text-sm">
+                <span className="font-bold">IMPORTANTE:</span> A senha padrão para todos os novos usuários é "123456". 
+                Por segurança, altere esta senha após o primeiro acesso.
+              </p>
+            </div>
+            
+            {userPassword && (
+              <div className="mt-4 flex space-x-2">
+                <button
+                  onClick={downloadCredentials}
+                  className="flex-1 bg-blue-700 hover:bg-blue-800 text-white py-2 px-4 rounded-md flex items-center justify-center"
+                >
+                  <Download className="h-4 w-4 mr-2" />
+                  Baixar Credenciais
+                </button>
+                <button
+                  onClick={printCredentials}
+                  className="flex-1 bg-lime-700 hover:bg-lime-800 text-white py-2 px-4 rounded-md flex items-center justify-center"
+                >
+                  <Save className="h-4 w-4 mr-2" />
+                  Imprimir
+                </button>
+              </div>
             )}
           </div>
           
-          {hasFullCredentials ? (
-            <div className="bg-gray-700 rounded-lg p-4 relative">
-              <span className="block text-sm font-medium text-gray-300 mb-2">Senha:</span>
-              <div className="text-white font-mono bg-gray-900/50 p-3 rounded border border-yellow-500">
-                {userPassword}
-              </div>
-              <button 
-                onClick={() => copyToClipboard(userPassword, 'password')}
-                className="absolute top-4 right-4 p-2 text-gray-400 hover:text-white rounded-md hover:bg-gray-600"
-                title="Copiar senha"
-              >
-                {copyStatus['password'] ? <Check className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
-              </button>
-            </div>
-          ) : (
-            <div className="bg-gray-700 rounded-lg p-4">
-              <span className="block text-sm font-medium text-gray-300 mb-2">Senha:</span>
-              <div className="text-gray-400 font-mono bg-gray-900/50 p-3 rounded">
-                Use sua senha atual para login
-              </div>
-            </div>
-          )}
-
-          {hasFullCredentials && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 no-print">
-              <button
-                onClick={printCredentials}
-                className="bg-gray-700 hover:bg-gray-600 text-white font-medium py-3 px-4 rounded-lg transition flex items-center justify-center space-x-2"
-              >
-                <Save className="h-5 w-5" />
-                <span>Imprimir</span>
-              </button>
-
-              <button
-                onClick={downloadCredentials}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition flex items-center justify-center space-x-2"
-              >
-                <Download className="h-5 w-5" />
-                <span>Baixar Arquivo</span>
-              </button>
-            </div>
-          )}
-
           <div className="bg-blue-900/30 border border-blue-500/30 rounded-lg p-4 mt-6 no-print">
             <p className="text-blue-200 text-sm">
               {hasFullCredentials 

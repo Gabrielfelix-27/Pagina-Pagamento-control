@@ -1,0 +1,2 @@
+[functions.trigger_sql]
+verify_jwt = false 

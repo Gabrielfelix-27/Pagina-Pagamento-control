@@ -61,21 +61,35 @@ serve(async (req) => {
 
     if (credentialsError) {
       console.error(`[ERROR] Erro ao buscar credenciais: ${credentialsError.message}`);
+    } else {
+      console.log(`[DEBUG] Resultado da busca de credenciais: ${JSON.stringify(credentials)}`);
     }
 
     // Se encontramos credenciais, retorná-las
     if (credentials && credentials.length > 0) {
-      console.log(`[SUCCESS] Credenciais encontradas para pagamento ${paymentId}`);
-      return new Response(
-        JSON.stringify({ 
-          success: true,
-          data: credentials[0]
-        }),
-        {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        }
-      );
+      console.log(`[SUCCESS] Credenciais encontradas para pagamento ${paymentId}: ${JSON.stringify(credentials[0])}`);
+      
+      // Verifique se há dados válidos
+      if (credentials[0].email) {
+        return new Response(
+          JSON.stringify({ 
+            success: true,
+            data: {
+              ...credentials[0],
+              password: "123456" // Sempre retornar a senha padrão, independente do que está no banco
+            },
+            source: 'database'
+          }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          }
+        );
+      } else {
+        console.log(`[WARN] Credenciais encontradas mas sem email válido`);
+      }
+    } else {
+      console.log(`[INFO] Nenhuma credencial encontrada na tabela payment_credentials`);
     }
 
     // Segundo método: tentar encontrar no storage (método alternativo)
@@ -96,7 +110,7 @@ serve(async (req) => {
             success: true,
             data: {
               email: jsonData.email,
-              password: jsonData.password,
+              password: "123456", // Sempre retornar a senha padrão
               redirect_url: jsonData.redirectUrl
             },
             source: 'storage'
@@ -120,6 +134,7 @@ serve(async (req) => {
         throw new Error("STRIPE_SECRET_KEY não está configurada");
       }
       
+      console.log(`[INFO] Conectando ao Stripe para recuperar dados de ${paymentId}`);
       const stripe = new Stripe(stripeSecretKey, {
         apiVersion: "2023-10-16",
         httpClient: Stripe.createFetchHttpClient(),
@@ -127,25 +142,49 @@ serve(async (req) => {
       
       // Buscar dados da sessão/pagamento
       let customerIdToSearch;
+      let customerEmail;
+      let paymentData = {};
       
       // Tentar primeiro como session_id
       try {
+        console.log(`[INFO] Tentando recuperar como checkout.session: ${paymentId}`);
         const session = await stripe.checkout.sessions.retrieve(paymentId);
+        console.log(`[INFO] Sessão encontrada: ${session.id}, status: ${session.status}`);
+        
         if (session && session.customer) {
           customerIdToSearch = typeof session.customer === 'string' 
             ? session.customer 
             : session.customer.id;
+          
+          // Tentar obter email do customer_details
+          if (session.customer_details && session.customer_details.email) {
+            customerEmail = session.customer_details.email;
+            console.log(`[INFO] Email do cliente obtido dos customer_details: ${customerEmail}`);
+          }
+          
+          paymentData = {
+            session_id: session.id,
+            payment_status: session.payment_status,
+          };
         }
       } catch (sessionErr) {
         console.log(`[INFO] Não é uma sessão válida: ${sessionErr.message}`);
         
         // Tentar como payment_intent_id
         try {
+          console.log(`[INFO] Tentando recuperar como paymentIntent: ${paymentId}`);
           const paymentIntent = await stripe.paymentIntents.retrieve(paymentId);
+          console.log(`[INFO] PaymentIntent encontrado: ${paymentIntent.id}, status: ${paymentIntent.status}`);
+          
           if (paymentIntent && paymentIntent.customer) {
             customerIdToSearch = typeof paymentIntent.customer === 'string' 
               ? paymentIntent.customer 
               : paymentIntent.customer.id;
+            
+            paymentData = {
+              payment_intent_id: paymentIntent.id,
+              payment_status: paymentIntent.status,
+            };
           }
         } catch (piErr) {
           console.log(`[INFO] Não é um payment_intent válido: ${piErr.message}`);
@@ -155,67 +194,132 @@ serve(async (req) => {
       // Se temos um ID de cliente, buscar metadados
       if (customerIdToSearch) {
         console.log(`[INFO] Buscando cliente ${customerIdToSearch} no Stripe`);
-        const customer = await stripe.customers.retrieve(customerIdToSearch);
         
-        if (customer && customer.metadata) {
-          console.log(`[INFO] Metadados encontrados para cliente ${customerIdToSearch}`);
+        try {
+          const customer = await stripe.customers.retrieve(customerIdToSearch);
           
-          // Verificar se há dados úteis nos metadados
-          if (customer.metadata.userId && (
-              customer.metadata.tempPassword || 
-              customer.metadata.password || 
-              customer.metadata.redirectUrl
-          )) {
-            const email = customer.email;
-            const password = customer.metadata.tempPassword || customer.metadata.password;
-            const redirectUrl = customer.metadata.redirectUrl;
+          if (customer && !('deleted' in customer)) {
+            console.log(`[INFO] Cliente encontrado: ${customer.id}, email: ${customer.email}`);
             
-            console.log(`[SUCCESS] Recuperados dados do Stripe para ${email}`);
-            
-            // Armazenar para futuras recuperações
-            try {
-              await supabase
-                .from('payment_credentials')
-                .upsert({
-                  payment_id: paymentId,
-                  email: email,
-                  password: password,
-                  redirect_url: redirectUrl,
-                  created_at: new Date().toISOString()
-                });
-            } catch (insertErr) {
-              console.error(`[ERROR] Erro ao salvar dados recuperados: ${insertErr.message}`);
+            // Usar o email do cliente se não tivermos obtido antes
+            if (!customerEmail && customer.email) {
+              customerEmail = customer.email;
             }
             
-            return new Response(
-              JSON.stringify({
-                success: true,
-                data: {
-                  email: email,
-                  password: password,
-                  redirect_url: redirectUrl
-                },
-                source: 'stripe'
-              }),
-              {
-                status: 200,
-                headers: { ...corsHeaders, "Content-Type": "application/json" }
+            if (customer.metadata) {
+              console.log(`[INFO] Metadados encontrados para cliente ${customerIdToSearch}: ${JSON.stringify(customer.metadata)}`);
+              
+              // Verificar se há dados úteis nos metadados
+              const password = customer.metadata.tempPassword || 
+                               customer.metadata.temp_password || 
+                               customer.metadata.password;
+              
+              if (customerEmail && password) {
+                console.log(`[SUCCESS] Credenciais completas recuperadas do Stripe para ${customerEmail}`);
+                
+                // Armazenar para futuras recuperações
+                try {
+                  const { error: insertError } = await supabase
+                    .from('payment_credentials')
+                    .upsert({
+                      payment_id: paymentId,
+                      email: customerEmail,
+                      password: "123456", // Sempre usar senha padrão
+                      redirect_url: customer.metadata.redirectUrl,
+                      created_at: new Date().toISOString()
+                    });
+                    
+                  if (insertError) {
+                    console.error(`[ERROR] Erro ao salvar dados recuperados: ${insertError.message}`);
+                  } else {
+                    console.log(`[SUCCESS] Credenciais salvas na tabela payment_credentials para recuperação futura`);
+                  }
+                } catch (insertErr) {
+                  console.error(`[ERROR] Erro ao salvar dados recuperados: ${insertErr.message}`);
+                }
+                
+                return new Response(
+                  JSON.stringify({
+                    success: true,
+                    data: {
+                      email: customerEmail,
+                      password: "123456", // Sempre retornar a senha padrão
+                      redirect_url: customer.metadata.redirectUrl,
+                      ...paymentData
+                    },
+                    source: 'stripe'
+                  }),
+                  {
+                    status: 200,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" }
+                  }
+                );
+              } else {
+                console.log(`[WARN] Dados incompletos nos metadados do cliente. Email: ${customerEmail ? 'Sim' : 'Não'}, Senha: ${password ? 'Sim' : 'Não'}`);
+                
+                // Se temos pelo menos o email, retorná-lo
+                if (customerEmail) {
+                  console.log(`[INFO] Retornando apenas email do cliente: ${customerEmail}`);
+                  return new Response(
+                    JSON.stringify({
+                      success: true,
+                      data: {
+                        email: customerEmail,
+                        ...paymentData
+                      },
+                      source: 'stripe_partial'
+                    }),
+                    {
+                      status: 200,
+                      headers: { ...corsHeaders, "Content-Type": "application/json" }
+                    }
+                  );
+                }
               }
-            );
+            } else {
+              console.log(`[WARN] Cliente não tem metadados`);
+              
+              // Se temos pelo menos o email, retorná-lo
+              if (customerEmail) {
+                console.log(`[INFO] Retornando apenas email do cliente: ${customerEmail}`);
+                return new Response(
+                  JSON.stringify({
+                    success: true,
+                    data: {
+                      email: customerEmail,
+                      ...paymentData
+                    },
+                    source: 'stripe_email_only'
+                  }),
+                  {
+                    status: 200,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" }
+                  }
+                );
+              }
+            }
+          } else {
+            console.log(`[WARN] Cliente não encontrado ou excluído: ${customerIdToSearch}`);
           }
+        } catch (customerErr) {
+          console.error(`[ERROR] Erro ao recuperar cliente: ${customerErr.message}`);
         }
+      } else {
+        console.log(`[WARN] Não foi possível identificar o cliente associado ao pagamento ${paymentId}`);
       }
     } catch (stripeErr) {
       console.error(`[ERROR] Erro ao buscar no Stripe: ${stripeErr.message}`);
     }
 
-    // Se chegamos aqui, não encontramos as credenciais
-    console.log(`[WARN] Credenciais não encontradas para pagamento ${paymentId}`);
+    // Se chegamos aqui, não encontramos as credenciais completas
+    console.log(`[WARN] Credenciais completas não encontradas para pagamento ${paymentId}`);
+    
+    // Se pelo menos temos uma sessão/pagamento, retornar o que temos
     return new Response(
       JSON.stringify({ 
         success: false,
         error: "Credenciais não encontradas",
-        message: "Não foi possível recuperar os dados para este pagamento"
+        message: "Não foi possível recuperar os dados completos para este pagamento"
       }),
       {
         status: 404,

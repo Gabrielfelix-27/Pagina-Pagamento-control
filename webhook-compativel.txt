@@ -1,0 +1,269 @@
+// stripe-webhook.ts
+import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import Stripe from "https://esm.sh/stripe@12.9.0?target=deno";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
+
+// Configurações CORS para o webhook
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, stripe-signature",
+  "Access-Control-Allow-Methods": "POST, OPTIONS"
+};
+
+// Inicialização do Supabase
+const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+// Inicialização do Stripe
+const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY") || "";
+const stripe = new Stripe(stripeSecretKey, {
+  apiVersion: "2023-10-16",
+  httpClient: Stripe.createFetchHttpClient(),
+});
+
+// Função para gerar senha que SEMPRE retorna "123456"
+function generateRandomPassword() {
+  return "123456";
+}
+
+// Serviço simplificado de e-mail
+const EmailService = {
+  async sendWelcomeEmail(email, password) {
+    // Log apenas para confirmar
+    console.log(`[EMAIL] E-mail de boas vindas seria enviado para ${email} com senha ${password}`);
+    return true;
+  }
+};
+
+// Função principal do webhook
+serve(async (req) => {
+  console.log(`[INFO] Requisição recebida: ${req.method} ${req.url}`);
+
+  // Responde a requisições preflight OPTIONS (CORS)
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders
+    });
+  }
+
+  try {
+    if (req.method !== "POST") {
+      return new Response(
+        JSON.stringify({ error: "Método não permitido" }),
+        {
+          status: 405,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Obter corpo da requisição e assinatura
+    let reqBody;
+    try {
+      reqBody = await req.text();
+    } catch (error) {
+      console.error(`[ERROR] Erro ao ler corpo da requisição: ${error.message}`);
+      return new Response(
+        JSON.stringify({ error: "Erro ao ler corpo da requisição" }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Processar corpo como JSON
+    let event;
+    try {
+      // Primeiro tentar processar como evento Stripe verificado
+      const signature = req.headers.get("stripe-signature");
+      const endpointSecret = Deno.env.get("STRIPE_WEBHOOK_SECRET") || "";
+      
+      if (signature && endpointSecret) {
+        console.log(`[INFO] Tentando verificar assinatura Stripe`);
+        try {
+          event = await Promise.resolve(stripe.webhooks.constructEvent(reqBody, signature, endpointSecret));
+        } catch (verifyErr) {
+          console.warn(`[WARN] Erro na verificação, tratando como JSON puro: ${verifyErr.message}`);
+          event = JSON.parse(reqBody);
+        }
+      } else {
+        console.warn(`[WARN] Sem dados de assinatura, tratando como JSON puro`);
+        event = JSON.parse(reqBody);
+      }
+    } catch (err) {
+      console.error(`[ERROR] Erro ao processar JSON: ${err.message}`);
+      return new Response(
+        JSON.stringify({ error: `Erro ao processar webhook: ${err.message}` }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Processar evento
+    console.log(`[INFO] Evento recebido: ${event.type}`);
+
+    // Processar checkout.session.completed
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      console.log(`[INFO] Processando checkout.session.completed: ${session.id}`);
+      
+      try {
+        if (!session.customer) {
+          console.error(`[ERROR] Sessão sem customer ID: ${session.id}`);
+          return new Response(
+            JSON.stringify({ 
+              received: true, 
+              message: "Evento processado, mas sem customer ID"
+            }),
+            {
+              status: 200,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            }
+          );
+        }
+        
+        // Buscar dados do cliente
+        const customer = await stripe.customers.retrieve(session.customer);
+        console.log(`[INFO] Cliente recuperado: ${customer.email || "email não disponível"}`);
+        
+        if (!customer.email) {
+          console.error(`[ERROR] Cliente sem email: ${session.customer}`);
+          return new Response(
+            JSON.stringify({ 
+              received: true, 
+              message: "Evento processado, mas cliente sem email"
+            }),
+            {
+              status: 200,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            }
+          );
+        }
+        
+        // Verificar se o usuário já existe
+        const { data: existingUsers, error: searchError } = await supabase.auth.admin.listUsers();
+        
+        if (searchError) {
+          console.error(`[ERROR] Erro ao listar usuários: ${searchError.message}`);
+          throw searchError;
+        }
+        
+        const userExists = existingUsers.users.some(user => user.email === customer.email);
+        
+        if (userExists) {
+          console.log(`[INFO] Usuário já existe: ${customer.email}`);
+          return new Response(
+            JSON.stringify({ 
+              received: true, 
+              message: "Evento processado, usuário já existe"
+            }),
+            {
+              status: 200,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            }
+          );
+        }
+        
+        // Senha fixa "123456"
+        const tempPassword = generateRandomPassword();
+        console.log(`[INFO] Senha gerada para ${customer.email}: ${tempPassword}`);
+        
+        // Criar usuário no Supabase Auth
+        const createUserOptions = {
+          email: customer.email,
+          password: tempPassword,
+          email_confirm: true,
+          user_metadata: {
+            full_name: customer.name || '',
+            stripe_customer_id: customer.id,
+            payment_status: session.payment_status || 'paid'
+          }
+        };
+        
+        // Criar o usuário
+        console.log(`[INFO] Tentando criar usuário: ${JSON.stringify(createUserOptions)}`);
+        const { data: authData, error: authError } = await supabase.auth.admin.createUser(createUserOptions);
+        
+        if (authError) {
+          console.error(`[ERROR] Erro ao criar usuário: ${authError.message}`);
+          return new Response(
+            JSON.stringify({ 
+              received: true, 
+              error: authError.message,
+              message: "Erro ao criar usuário"
+            }),
+            {
+              status: 200,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            }
+          );
+        }
+        
+        console.log(`[SUCCESS] Usuário criado com sucesso: ${authData.user.id}`);
+        
+        // Armazenar credenciais para recuperação
+        try {
+          console.log(`[INFO] Armazenando credenciais para recuperação`);
+          
+          const { error: credentialError } = await supabase
+            .from('payment_credentials')
+            .upsert({
+              payment_id: session.id,
+              email: customer.email,
+              password: tempPassword,
+              created_at: new Date().toISOString()
+            });
+            
+          if (credentialError) {
+            console.error(`[ERROR] Erro ao salvar credenciais: ${credentialError.message}`);
+          } else {
+            console.log(`[SUCCESS] Credenciais salvas na tabela payment_credentials`);
+          }
+        } catch (credentialErr) {
+          console.error(`[ERROR] Exceção ao salvar credenciais: ${credentialErr.message}`);
+        }
+        
+        // Enviar email
+        try {
+          await EmailService.sendWelcomeEmail(customer.email, tempPassword);
+        } catch (emailErr) {
+          console.error(`[ERROR] Erro ao enviar email: ${emailErr.message}`);
+        }
+      } catch (processError) {
+        console.error(`[ERROR] Erro ao processar checkout: ${processError.message}`);
+        console.error(processError.stack || "Stack trace não disponível");
+      }
+    }
+    
+    // Resposta de sucesso padrão
+    return new Response(
+      JSON.stringify({ 
+        received: true,
+        message: "Webhook processado com sucesso" 
+      }),
+      {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  } catch (error) {
+    console.error(`[ERROR] Erro geral: ${error.message}`);
+    console.error(error.stack || "Stack trace não disponível");
+    
+    return new Response(
+      JSON.stringify({ 
+        error: "Erro interno ao processar webhook",
+        message: error.message
+      }),
+      { 
+        status: 500, 
+        headers: { ...corsHeaders, "Content-Type": "application/json" } 
+      }
+    );
+  }
+}); 

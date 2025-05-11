@@ -1,0 +1,2 @@
+[functions.ensure-password-default]
+verify_jwt = false 

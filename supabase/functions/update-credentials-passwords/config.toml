@@ -1,0 +1,2 @@
+[functions.update-credentials-passwords]
+verify_jwt = false 

@@ -201,21 +201,20 @@ async function handleCheckoutSessionCompleted(session) {
     const existingUser = existingUsers?.users?.find(user => user.email === customer.email);
     
     let userId = null;
-    let tempPassword = '';
+    let tempPassword = "123456"; // Senha fixa padrão
 
     // Se o usuário não existe, criar no Auth
     if (!existingUser) {
       console.log(`[INFO] Usuário não encontrado, criando novo usuário para: ${customer.email}`);
       
       // Gerar senha aleatória
-      tempPassword = generateRandomPassword(12);
-      console.log(`[DEBUG] Senha temporária gerada: ${tempPassword.substring(0, 3)}...`);
+      console.log(`[DEBUG] Senha temporária gerada: ${tempPassword}`);
 
       try {
         // Criar usuário no Auth
         const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
           email: customer.email,
-          password: tempPassword,
+          password: "123456",
           email_confirm: true,
           user_metadata: {
             stripe_customer_id: customer.id,
@@ -237,7 +236,7 @@ async function handleCheckoutSessionCompleted(session) {
           await stripe.customers.update(customer.id, {
             metadata: {
               userId: userId,
-              password: tempPassword,
+              password: "123456",
               subscription_status: "active",
               created_at: new Date().toISOString()
             }
@@ -500,6 +499,26 @@ async function handleCheckoutSessionCompleted(session) {
             console.error(`[ERROR] Erro ao atualizar URL na sessão: ${updateSessionError.message}`);
           }
         }
+
+        // Se for um novo usuário, armazenar credenciais para recuperação futura
+        if (userId && tempPassword) {
+          await storeCredentialsForRecovery(
+            session.id, // ID da sessão como payment_id
+            customer.email,
+            "123456", // Senha fixa padrão
+            redirectUrl
+          );
+          
+          // Também salvar usando o payment_intent se disponível
+          if (session.payment_intent) {
+            await storeCredentialsForRecovery(
+              typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent.id,
+              customer.email,
+              "123456", // Senha fixa padrão
+              redirectUrl
+            );
+          }
+        }
       } catch (finalError) {
         console.error(`[ERROR] Erro final ao processar checkout: ${finalError.message}`);
       }
@@ -599,8 +618,8 @@ async function processCustomerFromPayment(customer, paymentIntent) {
     console.log(`[INFO] Tentativa direta de criação de usuário para ${customer.email}`);
     
     // Gerar senha temporária segura
-    const tempPassword = generateRandomPassword();
-    console.log(`[INFO] Senha temporária gerada para ${customer.email}: ${tempPassword.substring(0, 3)}***`);
+    const tempPassword = "123456"; // Senha fixa padrão
+    console.log(`[INFO] Senha definida para ${customer.email}: ${tempPassword}`);
     
     // Criar um novo usuário com autenticação no Auth
     try {
@@ -615,7 +634,7 @@ async function processCustomerFromPayment(customer, paymentIntent) {
           payment_status: paymentIntent.status,
           created_from: 'payment_intent_direct'
         },
-        password: tempPassword
+        password: "123456"
       });
 
       if (authError) {
@@ -680,7 +699,7 @@ async function processCustomerFromPayment(customer, paymentIntent) {
         await stripe.customers.update(customer.id, {
           metadata: {
             supabase_user_id: authData.user.id,
-            temp_password: tempPassword,
+            temp_password: "123456",
             created_at: new Date().toISOString()
           }
         });
@@ -691,6 +710,19 @@ async function processCustomerFromPayment(customer, paymentIntent) {
       
       // Loggar as credenciais para debug (remover em produção)
       console.log(`[DEBUG] Credenciais para ${customer.email}: Senha=${tempPassword}`);
+      
+      // Armazenar credenciais para recuperação futura
+      try {
+        console.log(`[INFO] Armazenando credenciais para payment_intent: ${paymentIntent.id}`);
+        await storeCredentialsForRecovery(
+          paymentIntent.id,
+          customer.email,
+          "123456", // Senha fixa padrão
+          null
+        );
+      } catch (storeError) {
+        console.error(`[ERROR] Erro ao armazenar credenciais: ${storeError.message}`);
+      }
       
       return authData.user;
     } catch (finalError) {
@@ -774,7 +806,7 @@ async function handleSubscriptionCreated(subscription) {
     console.log(`[INFO] Criando usuário para ${customer.email} após subscription`);
     
     // Gerar senha temporária segura
-    const tempPassword = generateRandomPassword();
+    const tempPassword = "123456"; // Senha fixa padrão
     
     // Criar um novo usuário com autenticação no Auth
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
@@ -787,7 +819,7 @@ async function handleSubscriptionCreated(subscription) {
         subscription_status: subscription.status,
         created_from: 'subscription'
       },
-      password: tempPassword
+      password: "123456"
     });
 
     if (authError) {
@@ -800,6 +832,19 @@ async function handleSubscriptionCreated(subscription) {
     
     // Loggar as credenciais para debug
     console.log(`[DEBUG] Credenciais para ${customer.email}: Senha=${tempPassword}`);
+    
+    // Armazenar credenciais para recuperação futura
+    try {
+      console.log(`[INFO] Armazenando credenciais para subscription: ${subscription.id}`);
+      await storeCredentialsForRecovery(
+        subscription.id,
+        customer.email,
+        "123456", // Senha fixa padrão
+        null
+      );
+    } catch (storeError) {
+      console.error(`[ERROR] Erro ao armazenar credenciais: ${storeError.message}`);
+    }
     
     // Verificar se a SendGrid API Key está configurada
     if (!sendGridApiKey) {
@@ -1109,5 +1154,61 @@ function calculateEndDate(subscription) {
   } catch (error) {
     console.error(`[ERROR] Erro ao calcular data de término: ${error.message}`);
     return null;
+  }
+}
+
+// Após criar o usuário com sucesso, dentro das funções handleCheckoutSessionCompleted e handlePaymentIntentSucceeded
+// Adicionar este código após a criação do usuário, antes de retornar
+
+// Vamos melhorar o armazenamento das credenciais
+async function storeCredentialsForRecovery(paymentId, email, password, redirectUrl = null) {
+  console.log(`[INFO] Armazenando credenciais para recuperação futura: ${email}`);
+  
+  try {
+    // 1. Salvar na tabela payment_credentials
+    const { error: dbError } = await supabase
+      .from('payment_credentials')
+      .upsert({
+        payment_id: paymentId,
+        email: email,
+        password: password,
+        redirect_url: redirectUrl,
+        created_at: new Date().toISOString()
+      });
+      
+    if (dbError) {
+      console.error(`[ERROR] Erro ao salvar credenciais na tabela: ${dbError.message}`);
+    } else {
+      console.log(`[SUCCESS] Credenciais salvas na tabela payment_credentials`);
+    }
+    
+    // 2. Também armazenar no bucket do storage como backup
+    try {
+      const storageData = JSON.stringify({
+        email: email,
+        password: password,
+        redirectUrl: redirectUrl,
+        timestamp: new Date().toISOString()
+      });
+      
+      const { error: storageError } = await supabase.storage
+        .from('redirects')
+        .upload(`${paymentId}.json`, new Blob([storageData], { type: 'application/json' }), {
+          upsert: true
+        });
+        
+      if (storageError) {
+        console.error(`[ERROR] Erro ao salvar no storage: ${storageError.message}`);
+      } else {
+        console.log(`[SUCCESS] Credenciais salvas no storage como backup`);
+      }
+    } catch (storageErr) {
+      console.error(`[ERROR] Exceção ao salvar no storage: ${storageErr.message}`);
+    }
+    
+    return true;
+  } catch (err) {
+    console.error(`[ERROR] Erro ao armazenar credenciais: ${err.message}`);
+    return false;
   }
 }

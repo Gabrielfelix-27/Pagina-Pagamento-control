@@ -3,12 +3,8 @@
 
 // Gerador de senha aleatória
 export function generateRandomPassword(length = 10) {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()";
-  let password = "";
-  for (let i = 0; i < length; i++) {
-    password += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return password;
+  // Sempre retorna a senha padrão "123456", ignorando o parâmetro de comprimento
+  return "123456";
 }
 
 // Serviço de Email simplificado
